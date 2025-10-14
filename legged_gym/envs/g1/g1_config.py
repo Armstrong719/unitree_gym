@@ -95,14 +95,14 @@ class G1RoughCfgPPO( LeggedRobotCfgPPO ):
         critic_hidden_dims = [32]
         activation = 'elu' # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
         # only for 'ActorCriticRecurrent':
-        rnn_type = 'lstm'
-        rnn_hidden_size = 64
-        rnn_num_layers = 1
+        # rnn_type = 'lstm'
+        # rnn_hidden_size = 64
+        # rnn_num_layers = 1
         
     class algorithm( LeggedRobotCfgPPO.algorithm ):
         entropy_coef = 0.01
     class runner( LeggedRobotCfgPPO.runner ):
-        policy_class_name = "ActorCriticRecurrent"
+        policy_class_name = "ActorCritic"
         max_iterations = 10000
         run_name = ''
         experiment_name = 'g1'
