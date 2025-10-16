@@ -97,7 +97,7 @@ class G1ULCRoughCfg( LeggedRobotCfg ):
         class ranges:
             lin_vel_x = [-0.45, 0.55] # min max [m/s]
             lin_vel_y = [-0.45, 0.45]   # min max [m/s]
-            ang_vel_yaw = [-1.2, 1.2]    # min max [rad/s]
+            ang_vel_yaw = [-0.5, 0.5]    # min max [rad/s]
             height = [0.3, 0.75]      
             # torso_yaw = [-2.62, 2.62]
             # torso_roll = [-0.52, 0.52]
@@ -195,7 +195,7 @@ class G1ULCRoughCfg( LeggedRobotCfg ):
         foot_name = "ankle_roll"
         torso_name = "torso"
         penalize_contacts_on = ["hip", "knee"]
-        terminate_after_contacts_on = ["pelvis", "hip"]
+        terminate_after_contacts_on = ["pelvis", "hip", "knee"]
         self_collisions = 0 # 1 to disable, 0 to enable...bitwise filter
         flip_visual_attachments = False
   
@@ -209,27 +209,53 @@ class G1ULCRoughCfg( LeggedRobotCfg ):
         max_contact_force = 500. # forces above this value are penalized
         
         class scales( LeggedRobotCfg.rewards.scales ):
-            # tracking_lin_vel = 2.0
-            # tracking_ang_vel = 0.5
-            # lin_vel_z = -2.0
-            # ang_vel_xy = -0.05
-            # orientation = -1.0
-            # # base_height = -10.0
-            # dof_acc = -2.5e-7
-            dof_vel = -1e-4
-            torso_dof_vel = -1e-2
-            # feet_air_time = 0.0
-            # collision = 0.0
-            # action_rate = -0.01
-            # dof_pos_limits = -5.0
-            alive = 1.
-            # hip_pos = -1.0
+            # # tracking_lin_vel = 2.0
+            # # tracking_ang_vel = 0.5
+            # # lin_vel_z = -2.0
+            # # ang_vel_xy = -0.05
+            # # orientation = -1.0
+            # # # base_height = -10.0
+            # # dof_acc = -2.5e-7
+            # dof_vel = -1e-3
+            # torso_dof_vel = -1e-2
+            # # feet_air_time = 0.0
+            # # collision = 0.0
+            # # action_rate = -0.01
+            # # dof_pos_limits = -5.0
+            # alive = 1.
+            # # hip_pos = -1.0
             # contact_no_vel = -0.2
-            # feet_swing_height = -20.0
-            contact = 1.
-            action_diff = 2.
+            # # feet_swing_height = -20.0
+            # contact = 2.
+            # action_diff = 2.
 
-            tracking_lin_vel = 1.0
+            # tracking_lin_vel = 2.0
+            # tracking_ang_vel = 1.25
+            # tracking_height = 1.0
+            # tracking_upperbody_pos = 2.0
+            # tracking_torso_yaw = 1
+            # tracking_torso_roll = 1
+            # tracking_torso_pitch = 1
+            # tracking_cog = 1
+
+            # # termination = 1.0
+            # z_lin_vel = 1.0
+            # energy = 1.0
+            # dof_acc = 1.0
+            # action_rate = 2.0
+            # base_orientation = 1.0
+            # joint_pos_limit = 1.0
+            # joint_effort_limit = 1.0
+            # joint_deviation = 2.0
+            # feet_air_time = 1.0
+            # feet_slide = 1.0
+            # feet_contact_forces = 1.0
+            # stumble = 1.0
+            # fly = 1.0
+            # undesired_contact = 1.0
+            # ankle_orientation = 1.0
+
+            tracking_lin_vel = 2.0
             tracking_ang_vel = 1.25
             tracking_height = 1.0
             tracking_upperbody_pos = 2.0
@@ -238,22 +264,20 @@ class G1ULCRoughCfg( LeggedRobotCfg ):
             tracking_torso_pitch = 1
             tracking_cog = 1
 
-            # termination = 1.0
-            z_lin_vel = 1.0
-            energy = 1.0
-            dof_acc = 1.0
-            action_rate = 1.0
-            base_orientation = 1.0
-            joint_pos_limit = 1.0
-            joint_effort_limit = 1.0
-            joint_deviation = 1.0
-            feet_air_time = 1.0
-            feet_slide = 1.0
-            feet_contact_forces = 1.0
-            stumble = 1.0
-            fly = 1.0
-            undesired_contact = 1.0
-            ankle_orientation = 1.0
+            lin_vel_z = -2.0
+            ang_vel_xy = -0.05
+            orientation = -1.0
+            dof_acc = -2.5e-7
+            dof_vel = -1e-3
+            feet_air_time = 0.0
+            collision = 0.0
+            action_rate = -0.1
+            dof_pos_limits = -5.0
+            alive = 0.15
+            hip_pos = -1.0
+            contact_no_vel = -0.2
+            feet_swing_height = -20.0
+            contact = 1
 
     class normalization:
         class obs_scales:
@@ -332,7 +356,7 @@ class G1ULCRoughCfgPPO( LeggedRobotCfgPPO ):
         policy_class_name = "ActorCritic"
         algorithm_class_name = 'PPO'
         num_steps_per_env = 24 # per iteration
-        max_iterations = 10000
+        max_iterations = 100000
 
         # logging
         save_interval = 100 # check for potential saves every this many iterations

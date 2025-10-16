@@ -53,6 +53,12 @@ class G1ULCRobot(LeggedRobot):
         self._prepare_reward_function()
         self.init_done = True
 
+    def reset(self):
+        """ Reset all robots"""
+        self.reset_idx(torch.arange(self.num_envs, device=self.device))
+        obs, privileged_obs, _, _, _, _ = self.step(torch.zeros(self.num_envs, self.num_actions, device=self.device, requires_grad=False))
+        return obs, privileged_obs
+
     def _get_noise_scale_vec(self, cfg):
         """ Sets a vector used to scale the noise added to the observations.
             [NOTE]: Must be adapted when changing the observations structure
@@ -110,7 +116,8 @@ class G1ULCRobot(LeggedRobot):
         self.obs_buf = torch.clip(self.obs_buf, -clip_obs, clip_obs)
         if self.privileged_obs_buf is not None:
             self.privileged_obs_buf = torch.clip(self.privileged_obs_buf, -clip_obs, clip_obs)
-        return self.obs_buf, self.privileged_obs_buf, self.rew_buf, self.reset_buf, self.extras
+        alpha = torch.concat([self.alpha_1, self.alpha_2, self.alpha_3])
+        return self.obs_buf, self.privileged_obs_buf, self.rew_buf, self.reset_buf, self.extras, alpha
     
     def post_physics_step(self):
         """ check terminations, compute observations and rewards
@@ -223,6 +230,16 @@ class G1ULCRobot(LeggedRobot):
 
         # commands variable
         self.motion_flag = torch.zeros(self.num_envs, dtype=torch.int, device=self.device)
+        self.avgrew_velocity = torch.zeros(1, device=self.device, dtype=torch.float32)
+        self.avgrew_height = torch.zeros(1, device=self.device, dtype=torch.float32)
+        self.avgrew_hip = torch.zeros(1, device=self.device, dtype=torch.float32)
+        self.avgrew_upper = torch.zeros(1, device=self.device, dtype=torch.float32)
+        self.avgrew_torso = torch.zeros(1, device=self.device, dtype=torch.float32)
+        self.alpha_1 = torch.ones(1, device=self.device, dtype=torch.float32)*0.05
+        self.alpha_2 = torch.zeros(1, device=self.device, dtype=torch.float32)
+        self.alpha_3 = torch.zeros(1, device=self.device, dtype=torch.float32)
+
+
 
       
 
@@ -352,6 +369,8 @@ class G1ULCRobot(LeggedRobot):
         
     def _post_physics_step_callback(self):
         self.update_feet_state()
+        if self.common_step_counter % 150 == 0: 
+            self.update_adaptive_curriculum()
 
         period = 1.
         offset = 0.5
@@ -359,9 +378,38 @@ class G1ULCRobot(LeggedRobot):
         self.phase_left = torch.where(self.motion_flag == 0, 0, self.phase)
         self.phase_right = torch.where(self.motion_flag == 0, 0, (self.phase + offset) % 1)
         self.leg_phase = torch.cat([self.phase_left.unsqueeze(1), self.phase_right.unsqueeze(1)], dim=-1)
+        self.contact_sequence = 1*(self.leg_phase < 0.55)
         
         return super()._post_physics_step_callback()
     
+    def update_adaptive_curriculum(self):
+        # update period 3s
+        
+        C_vel = self.avgrew_velocity >= 0.8
+        C_hgt = self.avgrew_height >= 0.85
+        C_hip = self.avgrew_hip <= 0.2
+        C_upper = self.avgrew_upper >= 0.7
+        C_torso = self.avgrew_torso >= 0.8
+        C_complete = self.alpha_3 >= 0.98
+
+        Cu_1 = C_vel
+        Cu_2 = C_hgt & C_vel 
+        Cu_3 = C_upper & C_torso & Cu_2 & C_complete
+
+        # print("vel:", self.avgrew_velocity)
+        # print("hgt:", self.avgrew_height)
+        # print("alpha2:", self.alpha_2)
+        # print("--"*10)
+
+
+        # if Cu_1 and (self.alpha_1 < 0.98):
+        #     self.alpha_1 = torch.clip(self.alpha_1 + 0.05, max=0.98)
+        if Cu_2 and (self.alpha_2 < 0.98):
+            self.alpha_2 = torch.clip(self.alpha_2 + 0.05, max=0.98)
+        if Cu_3 and (self.alpha_3 < 0.98):
+            self.alpha_3 = torch.clip(self.alpha_3 + 0.05, max=0.98)
+
+
     def _resample_commands(self, env_ids):
         """ Randommly select commands of some environments
 
@@ -374,11 +422,15 @@ class G1ULCRobot(LeggedRobot):
         self.commands[env_ids, 0] = torch_rand_float(self.command_ranges["lin_vel_x"][0], self.command_ranges["lin_vel_x"][1], (len(env_ids), 1), device=self.device).squeeze(1)
         self.commands[env_ids, 1] = torch_rand_float(self.command_ranges["lin_vel_y"][0], self.command_ranges["lin_vel_y"][1], (len(env_ids), 1), device=self.device).squeeze(1)
         self.commands[env_ids, 2] = torch_rand_float(self.command_ranges["ang_vel_yaw"][0], self.command_ranges["ang_vel_yaw"][1], (len(env_ids), 1), device=self.device).squeeze(1)
-        self.commands[env_ids, 3] = torch_rand_float(self.command_ranges["height"][0], self.command_ranges["height"][1], (len(env_ids), 1), device=self.device).squeeze(1)
-        self.commands[env_ids, 4] = torch_rand_float(self.command_ranges["torso_yaw"][0], self.command_ranges["torso_yaw"][1], (len(env_ids), 1), device=self.device).squeeze(1)
-        self.commands[env_ids, 5] = torch_rand_float(self.command_ranges["torso_roll"][0], self.command_ranges["torso_roll"][1], (len(env_ids), 1), device=self.device).squeeze(1)
-        self.commands[env_ids, 6] = torch_rand_float(self.command_ranges["torso_pitch"][0], self.command_ranges["torso_pitch"][1], (len(env_ids), 1), device=self.device).squeeze(1)
-        self.commands[env_ids, 7:] = self.random_arm_dof_pos()[env_ids, :]*0.
+        self.commands[env_ids, 3] = torch_rand_float(self.command_ranges["height"][0] + (1-self.alpha_2)*(self.command_ranges["height"][1] - self.command_ranges["height"][0]), \
+                                                     self.command_ranges["height"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+        self.commands[env_ids, 4] = torch_rand_float(self.command_ranges["torso_yaw"][0] + (1-self.alpha_3)*(self.command_ranges["torso_yaw"][1] - self.command_ranges["torso_yaw"][0]), \
+                                                     self.command_ranges["torso_yaw"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+        self.commands[env_ids, 5] = torch_rand_float(self.command_ranges["torso_roll"][0] + (1-self.alpha_3)*(self.command_ranges["torso_roll"][1] - self.command_ranges["torso_roll"][0]), \
+                                                     self.command_ranges["torso_roll"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+        self.commands[env_ids, 6] = torch_rand_float(self.command_ranges["torso_pitch"][0] + (1-self.alpha_3)*(self.command_ranges["torso_pitch"][1] - self.command_ranges["torso_pitch"][0]), \
+                                                     self.command_ranges["torso_pitch"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+        self.commands[env_ids, 7:] = self.random_arm_dof_pos()[env_ids, :]*self.alpha_3
 
         # set some reset env to stand
         rand_idx = (torch.rand(len(env_ids), device=self.device) < self.cfg.commands.stand_ratio) # 50% reset env stand
@@ -502,15 +554,15 @@ class G1ULCRobot(LeggedRobot):
         """
         sin_phase = torch.sin(2 * np.pi * self.phase ).unsqueeze(1)
         cos_phase = torch.cos(2 * np.pi * self.phase ).unsqueeze(1)
-        contact_sequence = 1*(self.leg_phase < 0.55)
         self.obs_buf = torch.cat((  self.base_ang_vel  * self.obs_scales.ang_vel,
                                     self.projected_gravity,
                                     self.commands,
                                     (self.dof_pos - self.default_dof_pos) * self.obs_scales.dof_pos,
                                     self.dof_vel * self.obs_scales.dof_vel,
                                     self.actions,
-                                    contact_sequence
+                                    self.contact_sequence
                                     ),dim=-1)
+        # print(self.contact_sequence)
         if self.add_noise:
             self.obs_buf += (2 * torch.rand_like(self.obs_buf) - 1) * self.noise_scale_vec
 
@@ -531,7 +583,7 @@ class G1ULCRobot(LeggedRobot):
                                     (self.dof_pos - self.default_dof_pos) * self.obs_scales.dof_pos,
                                     self.dof_vel * self.obs_scales.dof_vel,
                                     self.actions,
-                                    contact_sequence
+                                    self.contact_sequence
                                     ),dim=-1)
         if self.cfg.env.history_len > 0:
             self.privileged_obs_buf = torch.cat([self.privileged_obs_buf, self.privileged_obs_history_buf.view(self.num_envs, -1)], dim=-1)
@@ -556,6 +608,9 @@ class G1ULCRobot(LeggedRobot):
             is_stance = self.leg_phase[:, i] < 0.55
             contact = self.contact_forces[:, self.feet_indices[i], 2] > 1
             res += ~(contact ^ is_stance)
+        # print("target contact", is_stance)
+        # print("real contact", contact)
+        # print("--"*10)
         return res
     
     def _reward_feet_swing_height(self):
@@ -583,28 +638,49 @@ class G1ULCRobot(LeggedRobot):
     def _reward_tracking_lin_vel(self):
         # Tracking of linear velocity commands (xy axes)
         lin_vel_error = torch.sum(torch.square(self.commands[:, :2] - self.base_lin_vel[:, :2]), dim=1)
-        return torch.exp(-0.01*lin_vel_error/self.cfg.rewards.tracking_sigma)
+        self.avgrew_velocity = torch.mean(torch.exp(-lin_vel_error/self.cfg.rewards.tracking_sigma))
+        return torch.exp(-lin_vel_error/self.cfg.rewards.tracking_sigma)
     
     def _reward_tracking_ang_vel(self):
         # Tracking of angular velocity commands (yaw) 
         ang_vel_error = torch.square(self.commands[:, 2] - self.base_ang_vel[:, 2])
-        return torch.exp(-0.01*ang_vel_error/self.cfg.rewards.tracking_sigma)
+        return torch.exp(-ang_vel_error/self.cfg.rewards.tracking_sigma)
     
     def _reward_tracking_height(self):
         height_error = torch.square(self.commands[:, 3] - self.root_states[:, 2])
+        self.avgrew_height = torch.mean(torch.exp(-height_error/self.cfg.rewards.tracking_sigma))
         return torch.exp(-height_error/self.cfg.rewards.tracking_sigma)
 
     def _reward_tracking_upperbody_pos(self):
         upperbody_pos_error = torch.sum(torch.square(self.commands[:, 7:] - self.dof_pos[:, 15:]), dim=1)
+        self.avgrew_upper = torch.mean(torch.exp(-upperbody_pos_error/0.35**2))
         return torch.exp(-upperbody_pos_error/0.35**2)
     
     def _reward_tracking_torso_yaw(self):
         local_torso_orient = quat_mul(quat_conjugate(self.root_states[:, 3:7]), self.rigid_body_states_view[:, self.torso_indices, 3:7].squeeze(1))
-        _, _, raw_yaw = get_euler_xyz(local_torso_orient)
+        _, _, raw_yaw = get_euler_xyz(local_torso_orient) # yaw respect to pelvis
+        raw_roll, raw_pitch, _ = get_euler_xyz(self.rigid_body_states_view[:, self.torso_indices, 3:7].squeeze(1)) # roll pitch respect to global(gravity)
+        base_roll = torch.where(torch.logical_and(raw_roll<=torch.pi, raw_roll>=-torch.pi), raw_roll,
+                    torch.where(raw_roll > torch.pi, raw_roll - 2*torch.pi,
+                    torch.where(raw_roll < -torch.pi, raw_roll + 2*torch.pi, raw_roll)))
+        
+        base_pitch = torch.where(torch.logical_and(raw_pitch<=torch.pi, raw_pitch>=-torch.pi), raw_pitch,
+                    torch.where(raw_pitch > torch.pi, raw_pitch - 2*torch.pi,
+                    torch.where(raw_pitch < -torch.pi, raw_pitch + 2*torch.pi, raw_pitch)))
+        
         base_yaw = torch.where(torch.logical_and(raw_yaw<=torch.pi, raw_yaw>=-torch.pi), raw_yaw,
                     torch.where(raw_yaw > torch.pi, raw_yaw - 2*torch.pi,
                     torch.where(raw_yaw < -torch.pi, raw_yaw + 2*torch.pi, raw_yaw)))
+        
+        torso_roll_error = torch.square(self.commands[:, 5] - base_roll)
+        torso_pitch_error = torch.square(self.commands[:, 6] - base_pitch)
         torso_yaw_error = torch.square(self.commands[:, 4] - base_yaw)
+        # print("roll", base_roll)
+        # print("pitch", base_pitch)
+        # print("yaw", base_yaw)
+        # print("-"*20)
+        self.avgrew_torso = torch.mean(0.25*torch.exp(-torso_yaw_error/0.2**2) + 0.25*torch.exp(-torso_roll_error/0.2**2) + \
+                                       0.5*torch.exp(-torso_pitch_error/0.2**2))
         # print("base yaw", base_yaw)
         # print("torso yaw error", torso_yaw_error)
         # print("yaw command", self.commands[:, 4])
@@ -644,7 +720,7 @@ class G1ULCRobot(LeggedRobot):
     
     def _reward_dof_acc(self):
         # Penalize dof accelerations
-        return -2.5e-7*torch.sum(torch.square((self.last_dof_vel - self.dof_vel) / self.dt), dim=1)
+        return torch.sum(torch.square((self.last_dof_vel - self.dof_vel) / self.dt), dim=1)
 
     def _reward_torso_dof_vel(self):
         # Penalize dof velocities
@@ -655,7 +731,7 @@ class G1ULCRobot(LeggedRobot):
         # Penalize changes in actions
         # print("waist action diff", torch.sum(torch.square(self.last_actions[:, 12:15] - self.actions[:, 12:15]), dim=1))
         # print("waist dof pos", self.dof_pos[:, 12:15])
-        return -0.1*torch.sum(torch.square(self.last_actions - self.actions), dim=1)
+        return torch.sum(torch.square(self.last_actions - self.actions), dim=1)
     
     def _reward_base_orientation(self):
         return -5*torch.sum(torch.square(self.projected_gravity[:, :2]), dim=1) # ?????
@@ -672,12 +748,15 @@ class G1ULCRobot(LeggedRobot):
 
 
     def _reward_joint_deviation(self):
+        pitch_idx = [0, 3, 4, 6, 9, 10]
         hip_yaw_ankle_idx = [2, 5, 8, 11]
         hip_roll_idx = [1, 7]
         dev1 = torch.sum(torch.abs(self.dof_pos[:, hip_yaw_ankle_idx] - self.default_dof_pos[0, hip_yaw_ankle_idx]), dim=1)
         dev2 = torch.sum(torch.abs(self.dof_pos[:, hip_roll_idx] - self.default_dof_pos[0, hip_roll_idx]), dim=1)
+        pitch_dev = torch.sum(torch.abs(self.dof_pos[:, pitch_idx] - self.default_dof_pos[0, pitch_idx]), dim=1)
 
-        return -0.15*dev1 -0.3*dev2
+        self.avgrew_hip = torch.mean(pitch_dev)
+        return -0.15*dev1 -0.3*dev2 -0.15*pitch_dev
 
     def _reward_feet_air_time(self):
         # Reward long steps
