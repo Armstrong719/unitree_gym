@@ -93,7 +93,7 @@ class G1ULCRoughCfg( LeggedRobotCfg ):
         num_commands = 21 # default: lin_vel_x, lin_vel_y, ang_vel_yaw, height, torso yaw, torso roll, torso pitch, arms pos(14)
         resampling_time = 10. # time before command are changed[s]
         heading_command = False # if true: compute ang vel command from heading error
-        stand_ratio = 1
+        stand_ratio = 0.2
         class ranges:
             lin_vel_x = [-0.45, 0.55] # min max [m/s]
             lin_vel_y = [-0.45, 0.45]   # min max [m/s]
@@ -269,6 +269,7 @@ class G1ULCRoughCfg( LeggedRobotCfg ):
             orientation = -1.0
             dof_acc = -2.5e-7
             dof_vel = -1e-3
+            torso_dof_vel = -1e-2
             feet_air_time = 0.0
             collision = 0.0
             action_rate = -0.1
@@ -277,7 +278,7 @@ class G1ULCRoughCfg( LeggedRobotCfg ):
             hip_pos = -1.0
             contact_no_vel = -0.2
             feet_swing_height = -20.0
-            contact = 1
+            contact_tracking = 2.
 
     class normalization:
         class obs_scales:

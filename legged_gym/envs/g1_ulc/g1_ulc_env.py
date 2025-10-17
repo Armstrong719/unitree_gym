@@ -28,7 +28,7 @@ class G1ULCRobot(LeggedRobot):
         self.cfg = cfg
         self.sim_params = sim_params
         self.height_samples = None
-        self.debug_viz = False
+
         self.init_done = False
         self._parse_cfg(self.cfg)
         super().__init__(self.cfg, sim_params, physics_engine, sim_device, headless)
@@ -52,6 +52,7 @@ class G1ULCRobot(LeggedRobot):
         self._init_buffers()
         self._prepare_reward_function()
         self.init_done = True
+        self.debug_viz = False
 
     def reset(self):
         """ Reset all robots"""
@@ -133,6 +134,7 @@ class G1ULCRobot(LeggedRobot):
         # prepare quantities
         self.base_pos[:] = self.root_states[:, 0:3]
         self.base_quat[:] = self.root_states[:, 3:7]
+        self.target_pos += self.commands[:, :2]*self.dt
         self.rpy[:] = get_euler_xyz_in_tensor(self.base_quat[:])
         self.base_lin_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 7:10])
         self.base_ang_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13])
@@ -159,6 +161,19 @@ class G1ULCRobot(LeggedRobot):
         self.last_actions[:] = self.actions[:]
         self.last_dof_vel[:] = self.dof_vel[:]
         self.last_root_vel[:] = self.root_states[:, 7:13]
+        if self.viewer and self.enable_viewer_sync and self.debug_viz:
+            self._draw_debug_vis()
+
+    def check_termination(self):
+        """ Check if environments need to be reset
+        """
+        distance_error = torch.norm(self.target_pos - self.base_pos[:, :2], dim=1)
+        distance_buf = distance_error >= 0.5 # reset if the base pos is 0.5m far from target
+        self.reset_buf = torch.any(torch.norm(self.contact_forces[:, self.termination_contact_indices, :], dim=-1) > 1., dim=1)
+        # self.reset_buf |= torch.logical_or(torch.abs(self.rpy[:,1])>1.0, torch.abs(self.rpy[:,0])>0.8)
+        self.time_out_buf = self.episode_length_buf > self.max_episode_length # no terminal reward for time-outs
+        self.reset_buf |= self.time_out_buf
+        self.reset_buf |= distance_buf
 
     def _init_foot(self):
         self.feet_num = len(self.feet_indices)
@@ -238,6 +253,7 @@ class G1ULCRobot(LeggedRobot):
         self.alpha_1 = torch.ones(1, device=self.device, dtype=torch.float32)*0.05
         self.alpha_2 = torch.zeros(1, device=self.device, dtype=torch.float32)
         self.alpha_3 = torch.zeros(1, device=self.device, dtype=torch.float32)
+        self.target_pos = torch.zeros((self.num_envs, 2), device=self.device, dtype=torch.float32)
 
 
 
@@ -549,6 +565,30 @@ class G1ULCRobot(LeggedRobot):
         if self.cfg.env.send_timeouts:
             self.extras["time_outs"] = self.time_out_buf
 
+    def _reset_root_states(self, env_ids):
+        """ Resets ROOT states position and velocities of selected environmments
+            Sets base position based on the curriculum
+            Selects randomized base velocities within -0.5:0.5 [m/s, rad/s]
+        Args:
+            env_ids (List[int]): Environemnt ids
+        """
+        # base position
+        if self.custom_origins:
+            self.root_states[env_ids] = self.base_init_state
+            self.root_states[env_ids, :3] += self.env_origins[env_ids]
+            self.root_states[env_ids, :2] += torch_rand_float(-1., 1., (len(env_ids), 2), device=self.device) # xy position within 1m of the center
+        else:
+            self.root_states[env_ids] = self.base_init_state
+            self.root_states[env_ids, :3] += self.env_origins[env_ids]
+        
+        self.target_pos[env_ids, :] = self.root_states[env_ids, :2] # global frame
+        # base velocities
+        self.root_states[env_ids, 7:13] = torch_rand_float(-0.5, 0.5, (len(env_ids), 6), device=self.device) # [7:10]: lin vel, [10:13]: ang vel
+        env_ids_int32 = env_ids.to(dtype=torch.int32)
+        self.gym.set_actor_root_state_tensor_indexed(self.sim,
+                                                     gymtorch.unwrap_tensor(self.root_states),
+                                                     gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
+
     def compute_observations(self):
         """ Computes observations
         """
@@ -597,21 +637,67 @@ class G1ULCRobot(LeggedRobot):
         # add perceptive inputs if not blind
         # add noise if needed
 
+    def _draw_debug_vis(self):
+        """ Draws visualizations for dubugging (slows down simulation a lot).
+            Default behaviour: draws height measurement points
+        """
+        self.gym.clear_lines(self.viewer)
+        sphere_geom_current_pos = gymutil.WireframeSphereGeometry(0.02, 4, 4, None, color=(0.7, 0.5, 0))
+        sphere_geom_target_pos = gymutil.WireframeSphereGeometry(0.02, 4, 4, None, color=(0., 0.5, 0.7))
+        for i in range(self.num_envs):
+            # visualize robot height and target height
+
+
+            current_pos = (self.root_states[i, :3]).cpu().numpy()
+            target_pos = self.target_pos[i].cpu().numpy()
+            
+            # com_world = self.body_com[i, :3].cpu().numpy() + base_pos
+            # cop_world = self.body_cop[i, :3].cpu().numpy() + base_pos
+            cur_x = current_pos[0]
+            cur_y = current_pos[1] 
+            cur_z = 0.01
+            tar_x = target_pos[0]
+            tar_y = target_pos[1]
+            tar_z = 0.01
+
+            # print('visual dist',np.sqrt((com_x - lft_x)**2 + (com_y - lft_y)**2))
+            # print('visual com', com_world)
+            # print('visual feet',feet_world )
+            current_sphere_pose = gymapi.Transform(gymapi.Vec3(cur_x, cur_y, cur_z), r=None)
+            target_sphere_pose = gymapi.Transform(gymapi.Vec3(tar_x, tar_y, tar_z), r=None)
+            gymutil.draw_lines(sphere_geom_current_pos, self.gym, self.viewer, self.envs[i], current_sphere_pose)
+            gymutil.draw_lines(sphere_geom_target_pos, self.gym, self.viewer, self.envs[i], target_sphere_pose)
+
+
 
     def _reward_termination(self):
         # Terminal reward / penalty
         return -200*self.reset_buf * ~self.time_out_buf
         
-    def _reward_contact(self):
-        res = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
-        for i in range(self.feet_num):
-            is_stance = self.leg_phase[:, i] < 0.55
-            contact = self.contact_forces[:, self.feet_indices[i], 2] > 1
-            res += ~(contact ^ is_stance)
-        # print("target contact", is_stance)
-        # print("real contact", contact)
-        # print("--"*10)
-        return res
+    # def _reward_contact(self):
+    #     res = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+    #     for i in range(self.feet_num):
+    #         is_stance = self.leg_phase[:, i] < 0.55
+    #         contact = self.contact_forces[:, self.feet_indices[i], 2] > 1
+    #         res += ~(contact ^ is_stance)
+    #     # print("target contact", is_stance)
+    #     # print("real contact", contact)
+    #     # print("--"*10)
+    #     return res
+    
+    def _reward_contact_tracking(self):
+
+        real_contact = self.contact_forces[:, self.feet_indices, 2] > 1.
+        hard_sequence = torch.where(self.contact_sequence > 0, torch.ones_like(self.contact_sequence), torch.zeros_like(self.contact_sequence))
+
+        correct_contact = (real_contact == hard_sequence)
+        raw_rew = 0.5*torch.sum(correct_contact * 1, dim = 1)
+        error = 1 - raw_rew
+        # print('seq', hard_sequence)
+        # print('real', real_contact)
+        # print('correct', correct_contact)
+        # print('rew', torch.exp(-error*2))
+        return torch.exp(-error*2)
     
     def _reward_feet_swing_height(self):
         contact = torch.norm(self.contact_forces[:, self.feet_indices, :3], dim=2) > 1.
